@@ -1,0 +1,386 @@
+<!--
+Video Downloader (front-end + proxy) - single-file
+
+Files included in this single document:
+  1) Front-end HTML/JS (opens in browser)
+  2) Proxy server code (Node.js) inside the commented block below. Save that block as proxy-server.js
+
+Why a proxy server? Many video pages block cross-origin requests (CORS). The front-end will attempt a direct fetch but will usually fail; the proxy fetches the remote page server-side and returns the HTML to the front-end so we can extract video URLs.
+
+Quick start (recommended):
+  1) Save the proxy server code (the block labeled "=== proxy-server.js ===") into a file named proxy-server.js
+  2) Install dependencies: npm install express node-fetch@2 multer cheerio cors
+  3) Run: node proxy-server.js
+  4) Open this HTML file in your browser. Enable "Use proxy" and paste the target page URL. Click Fetch. The page will return candidate video URLs (mp4, m3u8, etc.).
+
+Legal reminder: Only download videos you own or have permission to download.
+-->
+<!doctype html>
+
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Link Scraper & Downloader</title>
+  <style>
+    :root {
+      --bg: #0f1724;
+      --card: #0b1220;
+      --accent: #06b6d4;
+      --muted: #94a3b8;
+      --glass: rgba(255, 255, 255, 0.03)
+    }
+    
+    body {
+      font-family: Inter, system-ui, Arial;
+      background: linear-gradient(180deg, #071029, #07172b);
+      color: #e6eef6;
+      margin: 0;
+      padding: 24px;
+    }
+    
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto
+    }
+    
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 20px
+    }
+    
+    .card {
+      background: var(--card);
+      padding: 18px;
+      border-radius: 12px;
+      box-shadow: 0 6px 20px rgba(2, 6, 23, 0.6);
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 13px
+    }
+    
+    input[type=text],
+    input[type=file],
+    textarea {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      background: var(--glass);
+      color: inherit
+    }
+    
+    .row {
+      display: flex;
+      gap: 12px
+    }
+    
+    .col {
+      flex: 1
+    }
+    
+    button {
+      background: var(--accent);
+      border: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: #042a2f;
+      font-weight: 600;
+      cursor: pointer
+    }
+    
+    .muted {
+      color: var(--muted);
+      font-size: 13px
+    }
+    
+    .results {
+      margin-top: 16px
+    }
+    
+    .source {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 10px
+    }
+    
+    .tag {
+      display: inline-block;
+      padding: 6px 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      font-size: 12px;
+      margin-right: 8px
+    }
+    
+    a.download {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #0ea5a5;
+      color: #042a2f;
+      font-weight: 700;
+      text-decoration: none
+    }
+    
+    pre {
+      white-space: pre-wrap;
+      max-height: 240px;
+      overflow: auto;
+      background: rgba(0, 0, 0, 0.15);
+      padding: 8px;
+      border-radius: 6px
+    }
+    
+    footer {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <header class="card" style="margin-bottom:12px">
+      <h1>Video Link Scraper & Downloader</h1>
+      <div class="muted">Paste a public HTML page URL that contains a video. Use the proxy if the site blocks cross-origin requests (recommended).</div>
+    </header>
+    <section class="card">
+      <label for="pageUrl">Page URL</label>
+      <input id="pageUrl" type="text" placeholder="https://example.com/page-with-video" />
+      
+      <div style="height:12px"></div>
+      
+      <div class="row" style="align-items:center">
+        <div class="col">
+          <label for="cookiesFile">(optional) cookies.txt</label>
+          <input id="cookiesFile" type="file" accept=".txt" />
+          <div class="muted">If the page requires login, export cookies from your browser (cookies.txt) and upload here. Works only with proxy enabled.</div>
+        </div>
+        <div style="width:140px">
+          <label>&nbsp;</label>
+          <button id="fetchBtn">Fetch</button>
+        </div>
+      </div>
+      
+      <div style="height:12px"></div>
+      <label><input id="useProxy" type="checkbox" checked /> Use proxy server (recommended)</label>
+      <div class="muted">Proxy server default: <code>http://localhost:3000/fetch?url=...</code></div>
+      
+      <div style="height:12px"></div>
+      <div id="status" class="muted">Idle</div>
+      
+      <div class="results" id="results"></div>
+    </section>
+    
+    <footer>
+      Built for convenience. Only download content you own or have permission to download.
+    </footer>
+    
+  </div>
+  <script>
+    const fetchBtn = document.getElementById('fetchBtn');
+    const pageUrlInput = document.getElementById('pageUrl');
+    const resultsEl = document.getElementById('results');
+    const statusEl = document.getElementById('status');
+    const useProxy = document.getElementById('useProxy');
+    const cookiesFile = document.getElementById('cookiesFile');
+    
+    function setStatus(s) { statusEl.textContent = s }
+    
+    fetchBtn.addEventListener('click', async () => {
+      const url = pageUrlInput.value.trim();
+      if (!url) { alert('Enter a page URL'); return }
+      resultsEl.innerHTML = '';
+      setStatus('Fetching...');
+      
+      try {
+        let html;
+        if (useProxy.checked) {
+          // send cookies file if provided
+          const form = new FormData();
+          form.append('url', url);
+          if (cookiesFile.files && cookiesFile.files[0]) form.append('cookies', cookiesFile.files[0]);
+          const resp = await fetch('http://localhost:3000/fetch', { method: 'POST', body: form });
+          if (!resp.ok) throw new Error('Proxy error: ' + resp.status + ' ' + resp.statusText);
+          const json = await resp.json();
+          if (json.error) throw new Error(json.error);
+          html = json.html || '';
+          displayCandidates(json.candidates || [], json.rawMatches || []);
+          setStatus('Done — results below');
+          return;
+        } else {
+          // Try direct fetch (may fail due to CORS)
+          const resp = await fetch(url, { mode: 'cors' });
+          html = await resp.text();
+          // parse HTML client-side
+          const candidates = extractCandidatesFromHtml(html);
+          displayCandidates(candidates);
+          setStatus('Done — results below');
+        }
+      } catch (err) {
+        console.error(err);
+        setStatus('Error: ' + err.message);
+        resultsEl.innerHTML = '<div class="muted">Error: ' + err.message + '</div>';
+      }
+    });
+    
+    function displayCandidates(candidates, rawMatches = []) {
+      if (candidates.length === 0 && rawMatches.length === 0) {
+        resultsEl.innerHTML = '<div class="muted">No video links found. Try enabling the proxy or providing cookies if the page requires login.</div>';
+        return;
+      }
+      
+      const out = [];
+      candidates.forEach((c, i) => {
+        const div = document.createElement('div');
+        div.className = 'source';
+        div.innerHTML = `
+      <div><span class="tag">${escapeHtml(c.type)}</span> <strong>${escapeHtml(c.url)}</strong></div>
+      <div class="muted">${escapeHtml(c.note||'')}</div>
+    `;
+        const download = document.createElement('a');
+        download.href = c.url;
+        download.className = 'download';
+        download.textContent = c.type && c.type.includes('m3u8') ? 'Open/Download (m3u8)' : 'Download file';
+        download.target = '_blank';
+        // use download attribute when same-origin or blob; browsers may ignore cross-origin download attribute
+        download.setAttribute('rel', 'noopener noreferrer');
+        div.appendChild(download);
+        
+        // Quick copy button
+        const copy = document.createElement('button');
+        copy.style.marginLeft = '10px';
+        copy.textContent = 'Copy URL';
+        copy.addEventListener('click', () => { navigator.clipboard.writeText(c.url);
+          copy.textContent = 'Copied!';
+          setTimeout(() => copy.textContent = 'Copy URL', 1200) });
+        div.appendChild(copy);
+        
+        out.push(div);
+      });
+      
+      if (rawMatches && rawMatches.length) {
+        const rawDiv = document.createElement('div');
+        rawDiv.className = 'source';
+        rawDiv.innerHTML = '<strong>Raw matches (might include tokens / duplicates)</strong>';
+        const pre = document.createElement('pre');
+        pre.textContent = rawMatches.join('\n');
+        rawDiv.appendChild(pre);
+        out.push(rawDiv);
+      }
+      
+      resultsEl.innerHTML = '';
+      out.forEach(n => resultsEl.appendChild(n));
+    }
+    
+    function extractCandidatesFromHtml(html) {
+      const candidates = [];
+      try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        // <video> tags
+        const videos = Array.from(doc.querySelectorAll('video'));
+        videos.forEach(v => {
+          const src = v.getAttribute('src');
+          if (src) candidates.push({ type: 'video', url: absolutize(src, doc.baseURI), note: 'video tag src' });
+          const sources = Array.from(v.querySelectorAll('source'));
+          sources.forEach(s => { const ssrc = s.getAttribute('src'); if (ssrc) candidates.push({ type: 'video-source', url: absolutize(ssrc, doc.baseURI), note: '<source> inside <video>' }); });
+        });
+        
+        // <source> outside video
+        const srcs = Array.from(doc.querySelectorAll('source')).filter(s => !s.closest('video'));
+        srcs.forEach(s => { const ssrc = s.getAttribute('src'); if (ssrc) candidates.push({ type: 'source', url: absolutize(ssrc, doc.baseURI) }) });
+        
+        // search for .m3u8 / .mpd / .mp4 in page text (regex)
+        const text = html;
+        const m3u8 = Array.from(new Set((text.match(/https?:\\/\\ / [ ^ \"'\\s<>]+?\.m3u8[^\"'\\s<>]*/gi) || []).map(x=>x.replace(/\\\u0026/g,'&'))));
+                    m3u8.forEach(u => candidates.push({ type: 'hls (m3u8)', url: absolutize(u, document.baseURI) }));
+                    const mpd = Array.from(new Set((text.match(/https?:\\/\\ / [ ^ \"'\\s<>]+?\.mpd[^\"'\\s<>]*/gi) || [])));
+                                mpd.forEach(u => candidates.push({ type: 'dash (mpd)', url: u }));
+                                const mp4 = Array.from(new Set((text.match(/https?:\\/\\ / [ ^ \"'\\s<>]+?\.mp4[^\"'\\s<>]*/gi) || [])));
+                                            mp4.forEach(u => candidates.push({ type: 'mp4', url: u }));
+                                            
+                                          }
+                                          catch (e) { console.warn(e) }
+                                          // normalize
+                                          return candidates.map(c => ({ type: c.type, url: c.url, note: c.note }));
+                                        }
+                                        
+                                        function absolutize(url, base) {
+                                          try { return (new URL(url, base || document.location.href)).href } catch (e) { return url }
+                                        }
+                                        
+                                        function escapeHtml(s) { if (!s) return ''; return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
+  </script><!--
+=== proxy-server.js ===
+Save the following as proxy-server.js and run with `node proxy-server.js`.
+Dependencies: npm install express node-fetch@2 multer cheerio cors
+This server accepts POST /fetch with form-data: url (string), optional cookies file (field name 'cookies')
+It returns JSON: { html: '<raw html>', candidates: [...], rawMatches: [...] }
+--><!--
+const express = require('express');
+const fetch = require('node-fetch');
+const multer = require('multer');
+const cheerio = require('cheerio');
+const cors = require('cors');
+const app = express();
+const upload = multer();
+app.use(cors());
+app.use(express.json());
+
+app.post('/fetch', upload.single('cookies'), async (req,res)=>{
+  try{
+    const url = req.body.url || req.query.url;
+    if(!url) return res.status(400).json({ error: 'Missing url' });
+    const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; VideoScraper/1.0)' };
+    if(req.file){
+      // simple cookies.txt parsing: `cookieName\t...\tvalue` lines -> build Cookie header
+      const txt = req.file.buffer.toString('utf8');
+      const cookies = txt.split(/\r?\n/).map(l=>{ const parts = l.split('\t'); return parts.length>6 ? (parts[5] + '=' + parts[6]) : null }).filter(Boolean).join('; ');
+      if(cookies) headers['cookie'] = cookies;
+    }
+    const r = await fetch(url, { headers, redirect: 'follow' , timeout: 15000});
+    const html = await r.text();
+
+    // Extract candidates with cheerio + regex
+    const $ = cheerio.load(html);
+    const candidates = [];
+    $('video').each((i,el)=>{
+      const src = $(el).attr('src'); if(src) candidates.push({type:'video', url: new URL(src, url).href, note:'video tag src'});
+      $(el).find('source').each((i2, s)=>{ const ssrc = $(s).attr('src'); if(ssrc) candidates.push({type:'video-source', url: new URL(ssrc, url).href}) });
+    });
+    $('source').each((i,el)=>{ if(!$(el).closest('video').length){ const ssrc = $(el).attr('src'); if(ssrc) candidates.push({type:'source', url: new URL(ssrc, url).href}); } });
+
+    const text = html;
+    const regexes = [ /https?:\\/\\/[^\"'\\s<>]+?\\.m3u8[^\"'\\s<>]*/gi, /https?:\\/\\/[^\"'\\s<>]+?\\.mpd[^\"'\\s<>]*/gi, /https?:\\/\\/[^\"'\\s<>]+?\\.mp4[^\"'\\s<>]*/gi ];
+    const rawMatches = [];
+    regexes.forEach((re, idx)=>{
+      const matches = text.match(re) || [];
+      matches.forEach(m=>{ rawMatches.push(m); const t = idx===0? 'hls (m3u8)' : idx===1? 'dash (mpd)' : 'mp4'; try{ candidates.push({type:t, url: new URL(m, url).href}) }catch(e){ candidates.push({type:t, url:m}) } });
+    });
+
+    // dedupe
+    const seen = new Set();
+    const uniq = candidates.filter(c=>{ if(seen.has(c.url)) return false; seen.add(c.url); return true });
+
+    return res.json({ html: html, candidates: uniq, rawMatches: rawMatches.slice(0,200) });
+  }catch(err){
+    console.error(err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.listen(3000, ()=> console.log('Proxy server listening on http://localhost:3000'));
+-->
+</body>
+
+</html>
