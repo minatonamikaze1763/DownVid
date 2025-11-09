@@ -3,55 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Simple Video Downloader (No Proxy)</title>
+<title>Video Downloader </title>
 <style>
 body {
-  background: #0f1724;
-  font-family: system-ui, sans-serif;
-  color: #e6eef6;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 20px;
+  background:#0f1724;
+  color:#e6eef6;
+  font-family:system-ui,sans-serif;
+  display:flex;flex-direction:column;align-items:center;
+  padding:20px;
 }
 .card {
-  background: #1e293b;
-  border-radius: 12px;
-  padding: 16px;
-  width: 90%;
-  max-width: 600px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  background:#1e293b;
+  border-radius:12px;
+  padding:16px;
+  width:90%;max-width:600px;
+  box-shadow:0 4px 20px rgba(0,0,0,0.4);
 }
-input, button {
-  padding: 10px;
-  border-radius: 8px;
-  border: none;
-  margin: 6px 0;
+input,button {
+  padding:10px;border-radius:8px;border:none;margin:6px 0;
 }
 input[type=text] {
-  width: 90%;
-  background: #1e293b;
-  color: #fff;
-  border: 1px solid #334155;
+  width:90%;background:#1e293b;color:#fff;border:1px solid #334155;
 }
-button {
-  background: #06b6d4;
-  color: #042a2f;
-  font-weight: bold;
-  cursor: pointer;
-}
-#result {
-  margin-top: 20px;
-  text-align: center;
-}
-a.download {
-  display: inline-block;
-  background: #0ea5a5;
-  padding: 10px 14px;
-  border-radius: 8px;
-  text-decoration: none;
-  color: #042a2f;
-  font-weight: 700;
+button {background:#06b6d4;color:#042a2f;font-weight:bold;cursor:pointer;}
+#result{margin-top:20px;text-align:center;}
+a.download{
+  display:inline-block;background:#0ea5a5;padding:10px 14px;
+  border-radius:8px;text-decoration:none;color:#042a2f;font-weight:700;
 }
 </style>
 </head>
@@ -59,7 +37,7 @@ a.download {
 
 <div class="card">
   <h2>Simple Video Downloader</h2>
-  <p>Enter a page URL (must allow CORS):</p>
+  <p>Enter a page URL:</p>
   <input id="pageUrl" type="text" placeholder="https://example.com/video-page" />
   <button id="fetchBtn">Fetch Video</button>
   <div id="status"></div>
@@ -79,54 +57,64 @@ fetchBtn.addEventListener('click', async () => {
   statusEl.textContent = "Fetching page...";
   resultEl.innerHTML = "";
 
-  try {
-    const resp = await fetch(url);
-    const html = await resp.text();
+  const tryFetch = async (fetchUrl) => {
+    const resp = await fetch(fetchUrl);
+    if (!resp.ok) throw new Error(`Fetch failed: ${resp.status}`);
+    return await resp.text();
+  };
 
+  try {
+    let html;
+    try {
+      // Try direct fetch first
+      html = await tryFetch(url);
+    } catch {
+      // If blocked, use public CORS proxies
+      statusEl.textContent = "Direct fetch blocked — retrying via proxy...";
+      try {
+        html = await tryFetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+      } catch {
+        html = await tryFetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+      }
+    }
+
+    // parse and find videos
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, "text/html");
-
     const candidates = [];
 
-    // check <video src>
-    doc.querySelectorAll("video").forEach(v => {
+    doc.querySelectorAll("video").forEach(v=>{
       const src = v.getAttribute("src");
       if (src) candidates.push(new URL(src, url).href);
-      v.querySelectorAll("source").forEach(s => {
+      v.querySelectorAll("source").forEach(s=>{
         const ssrc = s.getAttribute("src");
         if (ssrc) candidates.push(new URL(ssrc, url).href);
       });
     });
 
-    // also try regex for .mp4 and .m3u8 links
     const regex = /(https?:\/\/[^\s"'<>]+?\.(mp4|m3u8|webm)[^\s"'<>]*)/gi;
     const matches = html.match(regex) || [];
-    matches.forEach(m => candidates.push(m));
+    matches.forEach(m=>candidates.push(m));
 
-    // remove duplicates
     const unique = [...new Set(candidates)];
-
-    if (unique.length === 0) {
-      resultEl.innerHTML = "<p>No video links found or CORS blocked.</p>";
-      statusEl.textContent = "Done (no video)";
+    if (unique.length===0) {
+      resultEl.innerHTML="<p>No video links found on this page.</p>";
+      statusEl.textContent="Done (no video)";
       return;
     }
 
-    // pick first one as main video
-    const main = unique[0];
-    resultEl.innerHTML = `
+    const main=unique[0];
+    resultEl.innerHTML=`
       <p><strong>Found Video:</strong></p>
       <p style="word-break:break-all;">${main}</p>
       <a href="${main}" class="download" target="_blank" rel="noopener noreferrer">Download Video</a>
     `;
-    statusEl.textContent = "Video ready for download";
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = "Error: " + err.message;
-    resultEl.innerHTML = `<p>Error: ${err.message}</p>`;
+    statusEl.textContent="Video ready for download ✅";
+  } catch(err) {
+    statusEl.textContent="Error: "+err.message;
+    resultEl.innerHTML=`<p>Error: ${err.message}</p>`;
   }
 });
 </script>
-
 </body>
 </html>
